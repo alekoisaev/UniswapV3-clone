@@ -3,12 +3,16 @@ pragma solidity 0.8.24;
 
 import "./lib/Position.sol";
 import "./lib/Tick.sol";
+import "./lib/TickBitmap.sol";
+import "./lib/Math.sol";
+import "./lib/TickMath.sol";
 import "./interfaces/IERC20.sol";
 import "./interfaces/IUniswapV3SwapCallback.sol";
 import "./interfaces/IUniswapV3MintCallback.sol";
 
 contract UniswapV3Pool {
     using Tick for mapping(int24 => Tick.Info);
+    using TickBitmap for mapping(int16 => uint256);
     using Position for mapping(bytes32 => Position.Info);
     using Position for Position.Info;
 
@@ -64,6 +68,7 @@ contract UniswapV3Pool {
 
     // Ticks info
     mapping(int24 => Tick.Info) public ticks;
+    mapping(int16 => uint256) public tickBitmap;
     mapping(bytes32 => Position.Info) public positions;
 
     constructor(address token0_, address token1_, uint160 sqrtPriceX96, int24 tick) {
@@ -98,14 +103,26 @@ contract UniswapV3Pool {
         if (lowerTick >= upperTick || lowerTick < MIN_TICK || upperTick > MAX_TICK) revert InvalidTickRange();
         if (amount == 0) revert ZeroLiquidity();
 
-        ticks.update(lowerTick, amount);
-        ticks.update(upperTick, amount);
+        bool flippedLower = ticks.update(lowerTick, amount);
+        bool flippedUpper = ticks.update(upperTick, amount);
+
+        if (flippedLower) {
+            tickBitmap.flipTick(lowerTick, 1);
+        }
+        if (flippedUpper) {
+            tickBitmap.flipTick(upperTick, 1);
+        }
 
         Position.Info storage position = positions.get(owner, lowerTick, upperTick);
         position.update(amount);
 
-        amount0 = 0.99897661834742528 ether; // TODO: replace with calculation
-        amount1 = 5000 ether; // TODO: replace with calculation
+        Slot0 memory slot0_ = slot0;
+        amount0 = Math.calcAmount0Delta(
+            TickMath.getSqrtRatioAtTick(slot0_.tick), TickMath.getSqrtRatioAtTick(upperTick), amount
+        );
+        amount1 = Math.calcAmount1Delta(
+            TickMath.getSqrtRatioAtTick(slot0_.tick), TickMath.getSqrtRatioAtTick(lowerTick), amount
+        );
 
         liquidity += uint128(amount);
 
